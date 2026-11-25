@@ -2429,7 +2429,10 @@ pub fn run(control: &Path) -> std::io::Result<()> {
                     frame,
                     doc,
                     theme,
-                    matches!(current, Some(Request::File { .. })),
+                    matches!(
+                        current,
+                        Some(Request::File { .. } | Request::Diff { .. })
+                    ),
                     notice.as_deref(),
                 );
             }
@@ -2608,29 +2611,49 @@ pub fn run(control: &Path) -> std::io::Result<()> {
                                         }
                                         if doc.media.is_some() {
                                             notice = Some("media previews are read-only".into());
-                                        } else if let Some(Request::File { path, .. }) =
-                                            current.as_ref()
-                                        {
-                                            match Editor::open(path, MAX_BYTES, MAX_LINES) {
-                                                Ok(editor) => {
-                                                    mode = ViewMode::Edit(editor);
-                                                    preview_load = None;
-                                                    notice = None;
-                                                    labels.report_identity(
-                                                        &mode,
-                                                        current
-                                                            .as_ref()
-                                                            .map(Request::doc_key)
-                                                            .as_deref(),
-                                                        control,
-                                                    );
-                                                }
-                                                Err(e) => notice = Some(e.to_string()),
-                                            }
                                         } else {
-                                            notice = Some(
-                                                "diffs and history previews are read-only".into(),
-                                            );
+                                            // a diff edits the worktree file it was
+                                            // computed from; `git show` has no file on disk
+                                            let edit_path = match current.as_ref() {
+                                                Some(Request::File { path, .. }) => {
+                                                    Some(path.clone())
+                                                }
+                                                Some(Request::Diff { root, rel, .. }) => Some(
+                                                    root.join(
+                                                        rel.replace(
+                                                            '/',
+                                                            std::path::MAIN_SEPARATOR_STR,
+                                                        ),
+                                                    ),
+                                                ),
+                                                _ => None,
+                                            };
+                                            match edit_path {
+                                                Some(path) => {
+                                                    match Editor::open(
+                                                        &path,
+                                                        MAX_BYTES,
+                                                        MAX_LINES,
+                                                    ) {
+                                                        Ok(editor) => {
+                                                            mode = ViewMode::Edit(editor);
+                                                            preview_load = None;
+                                                            notice = None;
+                                                            labels.report_identity(
+                                                                &mode,
+                                                                current
+                                                                    .as_ref()
+                                                                    .map(Request::doc_key)
+                                                                    .as_deref(),
+                                                                control,
+                                                            );
+                                                        }
+                                                        Err(e) => notice = Some(e.to_string()),
+                                                    }
+                                                }
+                                                None => notice =
+                                                    Some("history previews are read-only".into()),
+                                            }
                                         }
                                     }
                                     KeyCode::Up | KeyCode::Char('k') => {
@@ -3006,20 +3029,23 @@ fn draw_doc(
         } else {
             " image preview  q close".into()
         }
-    } else if editable {
-        preview_hint(
-            &["e edit", "r reload", "space/b page", wrap_hint],
-            footer.width,
-        )
-    } else if doc.diff.is_some() {
-        let layout_hint = if doc.side_by_side(body.width) {
-            "v: side by side"
-        } else if doc.split {
-            "v: side by side (too narrow)"
-        } else {
-            "v: unified"
-        };
-        preview_hint(&["space/b page", layout_hint, wrap_hint], footer.width)
+    } else if editable || doc.diff.is_some() {
+        let mut hints: Vec<&str> = Vec::new();
+        if editable {
+            hints.extend(["e edit", "r reload"]);
+        }
+        hints.push("space/b page");
+        if doc.diff.is_some() {
+            hints.push(if doc.side_by_side(body.width) {
+                "v: side by side"
+            } else if doc.split {
+                "v: side by side (too narrow)"
+            } else {
+                "v: unified"
+            });
+        }
+        hints.push(wrap_hint);
+        preview_hint(&hints, footer.width)
     } else {
         preview_hint(&["space/b page", "↑↓ scroll", wrap_hint], footer.width)
     };
